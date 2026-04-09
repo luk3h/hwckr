@@ -1,4 +1,0 @@
-/home/lukeh/Documents/hwckr/build/CMakeFiles/hwckr.dir
-/home/lukeh/Documents/hwckr/build/CMakeFiles/edit_cache.dir
-/home/lukeh/Documents/hwckr/build/CMakeFiles/rebuild_cache.dir
-/home/lukeh/Documents/hwckr/build/CMakeFiles/hwckr_autogen.dir
