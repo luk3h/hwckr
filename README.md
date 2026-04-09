@@ -20,3 +20,11 @@ cd build
 cmake ..
 make -j$(nproc)
 ./hwckr
+
+OR
+
+build.sh - compile
+run.sh - run without compiling
+dev.sh - run with compiling
+
+./dev.sh in directory to exec
