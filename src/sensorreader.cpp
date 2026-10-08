@@ -1,23 +1,27 @@
 #include "sensorreader.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <map>
 #include <regex>
 #include <sstream>
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 
 namespace {
 
-// Read the first line of a small sysfs file. Returns "" if it can't be read.
+// Read the first line of a small sysfs file, trimmed. Returns "" if it can't be read.
 std::string readLine(const fs::path &p)
 {
 	std::ifstream f(p);
 	std::string s;
 	std::getline(f, s);
-	return s;
+	while (!s.empty() && isspace(static_cast<unsigned char>(s.back())))
+		s.pop_back();
+	size_t start = s.find_first_not_of(" \t");
+	return start == std::string::npos ? "" : s.substr(start);
 }
 
 bool readNumber(const fs::path &p, double &out)
@@ -33,6 +37,19 @@ bool readNumber(const fs::path &p, double &out)
 	}
 }
 
+bool readCounter(const fs::path &p, unsigned long long &out)
+{
+	std::string s = readLine(p);
+	if (s.empty())
+		return false;
+	try {
+		out = std::stoull(s);
+		return true;
+	} catch (...) {
+		return false;
+	}
+}
+
 // Trailing number in a name like "hwmon3" or "cpu12", or -1.
 int trailingNumber(const std::string &s)
 {
@@ -42,15 +59,82 @@ int trailingNumber(const std::string &s)
 	return i == s.size() ? -1 : std::stoi(s.substr(i));
 }
 
+// Turn a hwmon chip name into a friendly device name and category.
+std::pair<std::string, Category> describeChip(const std::string &chip, const fs::path &dev)
+{
+	if (chip == "coretemp") return {"CPU [Intel]", Category::Cpu};
+	if (chip == "k10temp" || chip == "zenpower") return {"CPU [AMD]", Category::Cpu};
+	if (chip == "cpu_thermal") return {"CPU", Category::Cpu};
+	if (chip == "amdgpu") return {"GPU [AMD]", Category::Gpu};
+	if (chip == "radeon") return {"GPU [AMD Radeon]", Category::Gpu};
+	if (chip == "nouveau") return {"GPU [NVIDIA nouveau]", Category::Gpu};
+	if (chip == "i915" || chip == "xe") return {"GPU [Intel]", Category::Gpu};
+	if (chip == "nvme") {
+		std::string model = readLine(dev / "device" / "model");
+		return {model.empty() ? "NVMe Drive" : "NVMe: " + model, Category::Drive};
+	}
+	if (chip == "drivetemp") {
+		std::string model = readLine(dev / "device" / "model");
+		return {model.empty() ? "Drive" : "Drive: " + model, Category::Drive};
+	}
+	if (chip == "acpitz") return {"ACPI Thermal Zone", Category::Board};
+	if (chip == "pch_cannonlake" || chip.rfind("pch_", 0) == 0) return {"Chipset [" + chip + "]", Category::Board};
+	if (chip.rfind("nct", 0) == 0 || chip.rfind("it87", 0) == 0 || chip.rfind("it86", 0) == 0 ||
+	    chip.rfind("f71", 0) == 0 || chip.rfind("w83", 0) == 0 || chip == "asus_wmi_sensors" ||
+	    chip == "asus-ec-sensors" || chip == "gigabyte_wmi" || chip == "dell_smm")
+		return {"Motherboard [" + chip + "]", Category::Board};
+	if (chip == "iwlwifi" || chip.rfind("iwlwifi", 0) == 0 || chip.rfind("mt7", 0) == 0 ||
+	    chip == "r8169" || chip.rfind("r8169", 0) == 0 || chip == "ath11k" || chip == "ath10k_hwmon")
+		return {"Network [" + chip + "]", Category::Network};
+	if (chip == "BAT0" || chip == "BAT1" || chip == "ADP1" || chip == "AC")
+		return {"Battery [" + chip + "]", Category::Board};
+	return {chip, Category::Other};
+}
+
+int categoryRank(Category c)
+{
+	switch (c) {
+	case Category::Cpu: return 0;
+	case Category::Gpu: return 1;
+	case Category::Memory: return 2;
+	case Category::Board: return 3;
+	case Category::Drive: return 4;
+	case Category::Network: return 5;
+	default: return 6;
+	}
+}
+
+// Whole disks only: skip partitions and virtual devices.
+bool isRealDisk(const std::string &name)
+{
+	for (const char *skip : {"loop", "ram", "zram", "dm-", "sr", "fd"})
+		if (name.rfind(skip, 0) == 0)
+			return false;
+	return fs::exists("/sys/block/" + name);
+}
+
 } // namespace
 
 std::vector<Reading> SensorReader::read()
 {
+	auto now = std::chrono::steady_clock::now();
+	double seconds = havePrevTime ? std::chrono::duration<double>(now - prevTime).count() : 0.0;
+	prevTime = now;
+	havePrevTime = true;
+
 	std::vector<Reading> out;
 	readCpuClocks(out);
 	readCpuUsage(out);
 	readMemory(out);
 	readHwmon(out);
+	readNvidia(out);
+	readDisks(out, seconds);
+	readNetwork(out, seconds);
+
+	// CPU first, then GPU, memory, board, drives, network. Keeps the order within each.
+	std::stable_sort(out.begin(), out.end(), [](const Reading &a, const Reading &b) {
+		return categoryRank(a.category) < categoryRank(b.category);
+	});
 	return out;
 }
 
@@ -73,10 +157,10 @@ void SensorReader::readHwmon(std::vector<Reading> &out)
 		return trailingNumber(a.filename()) < trailingNumber(b.filename());
 	});
 
-	// Count chip names so duplicates (e.g. two "nvme" drives) get told apart.
+	// Count device names so duplicates (e.g. two identical drives) get told apart.
 	std::map<std::string, int> nameCount;
 	for (auto &d : devices)
-		nameCount[readLine(d / "name")]++;
+		nameCount[describeChip(readLine(d / "name"), d).first]++;
 
 	// temp1_input, fan2_input, in0_input, power1_average, curr1_input ...
 	static const std::regex sensorFile(R"(^(temp|fan|in|power|curr)(\d+)_(input|average)$)");
@@ -85,8 +169,8 @@ void SensorReader::readHwmon(std::vector<Reading> &out)
 		std::string chip = readLine(dev / "name");
 		if (chip.empty())
 			chip = dev.filename();
-		std::string group = chip;
-		if (nameCount[chip] > 1)
+		auto [group, category] = describeChip(chip, dev);
+		if (nameCount[group] > 1)
 			group += " (" + dev.filename().string() + ")";
 
 		struct Item { std::string type; int index; std::string file; };
@@ -117,6 +201,7 @@ void SensorReader::readHwmon(std::vector<Reading> &out)
 			Reading r;
 			r.group = group;
 			r.key = it.file;
+			r.category = category;
 
 			std::string base = it.type + std::to_string(it.index);
 			std::string label = readLine(dev / (base + "_label"));
@@ -136,6 +221,10 @@ void SensorReader::readHwmon(std::vector<Reading> &out)
 			else if (it.type == "power") { r.unit = "W";   r.value = raw / 1000000.0; }
 			else                         { r.unit = "A";   r.value = raw / 1000.0; }
 
+			// Ignore obviously bogus values some chips report for unconnected inputs.
+			if (r.unit == "°C" && (r.value <= -100 || r.value >= 200))
+				continue;
+
 			out.push_back(r);
 		}
 	}
@@ -152,26 +241,30 @@ void SensorReader::readCpuClocks(std::vector<Reading> &out)
 	std::vector<int> cpus;
 	for (auto &d : fs::directory_iterator(root, ec)) {
 		std::string name = d.path().filename();
-		if (name.rfind("cpu", 0) == 0 && trailingNumber(name) >= 0 &&
-		    name.size() > 3 && isdigit(static_cast<unsigned char>(name[3])))
+		if (name.size() > 3 && name.rfind("cpu", 0) == 0 && isdigit(static_cast<unsigned char>(name[3])))
 			cpus.push_back(trailingNumber(name));
 	}
 	std::sort(cpus.begin(), cpus.end());
 
-	double sum = 0;
-	int n = 0;
+	std::vector<Reading> threads;
+	double sum = 0, maxClock = 0;
 	for (int c : cpus) {
 		double khz;
 		fs::path p = root / ("cpu" + std::to_string(c)) / "cpufreq" / "scaling_cur_freq";
 		if (!readNumber(p, khz))
 			continue;
-		out.push_back({"CPU Clocks", "cpu" + std::to_string(c),
-		               "Thread " + std::to_string(c), "MHz", khz / 1000.0});
-		sum += khz / 1000.0;
-		n++;
+		double mhz = khz / 1000.0;
+		threads.push_back({"CPU Clocks", "cpu" + std::to_string(c),
+		                   "Thread " + std::to_string(c) + " Clock", "MHz", mhz, Category::Cpu});
+		sum += mhz;
+		maxClock = std::max(maxClock, mhz);
 	}
-	if (n > 0)
-		out.insert(out.end() - n, {"CPU Clocks", "avg", "Average", "MHz", sum / n});
+	if (threads.empty())
+		return;
+
+	out.push_back({"CPU Clocks", "avg", "Average Clock", "MHz", sum / threads.size(), Category::Cpu});
+	out.push_back({"CPU Clocks", "max", "Highest Clock", "MHz", maxClock, Category::Cpu});
+	out.insert(out.end(), threads.begin(), threads.end());
 }
 
 //--------------------------
@@ -210,8 +303,8 @@ void SensorReader::readCpuUsage(std::vector<Reading> &out)
 			auto dTotal = now[i].first - prevCpu[i].first;
 			auto dIdle = now[i].second - prevCpu[i].second;
 			double pct = dTotal ? 100.0 * (double)(dTotal - dIdle) / dTotal : 0.0;
-			std::string label = names[i] == "cpu" ? "Total" : "Thread " + names[i].substr(3);
-			out.push_back({"CPU Usage", names[i], label, "%", pct});
+			std::string label = names[i] == "cpu" ? "Total CPU Usage" : "Thread " + names[i].substr(3) + " Usage";
+			out.push_back({"CPU Usage", names[i], label, "%", pct, Category::Cpu});
 		}
 	}
 	prevCpu = now;
@@ -242,12 +335,133 @@ void SensorReader::readMemory(std::vector<Reading> &out)
 	double avail = kb.count("MemAvailable") ? kb["MemAvailable"] : kb["MemFree"];
 	double used = total - avail;
 
-	out.push_back({"Memory", "used", "Used", "GB", used / GB});
-	out.push_back({"Memory", "avail", "Available", "GB", avail / GB});
-	out.push_back({"Memory", "load", "Load", "%", total ? 100.0 * used / total : 0.0});
+	out.push_back({"Memory", "load", "Memory Load", "%", total ? 100.0 * used / total : 0.0, Category::Memory});
+	out.push_back({"Memory", "used", "Memory Used", "GB", used / GB, Category::Memory});
+	out.push_back({"Memory", "avail", "Memory Available", "GB", avail / GB, Category::Memory});
+	out.push_back({"Memory", "cached", "Cached", "GB", kb["Cached"] / GB, Category::Memory});
 
 	if (kb["SwapTotal"] > 0) {
 		double swapUsed = kb["SwapTotal"] - kb["SwapFree"];
-		out.push_back({"Memory", "swap", "Swap Used", "GB", swapUsed / GB});
+		out.push_back({"Memory", "swap", "Swap Used", "GB", swapUsed / GB, Category::Memory});
 	}
+}
+
+//--------------------------
+// Drive read/write speed
+// from /proc/diskstats (512-byte sectors)
+//--------------------------
+void SensorReader::readDisks(std::vector<Reading> &out, double seconds)
+{
+	std::ifstream f("/proc/diskstats");
+	std::string line;
+	while (std::getline(f, line)) {
+		std::istringstream ss(line);
+		unsigned long long major, minor, reads, readsMerged, sectorsRead, msRead, writes, writesMerged, sectorsWritten;
+		std::string name;
+		if (!(ss >> major >> minor >> name >> reads >> readsMerged >> sectorsRead >> msRead >> writes >> writesMerged >> sectorsWritten))
+			continue;
+		if (!isRealDisk(name))
+			continue;
+
+		auto prev = prevDisk.find(name);
+		if (prev != prevDisk.end() && seconds > 0) {
+			const double MB = 1024.0 * 1024.0;
+			double readRate = (sectorsRead - prev->second.first) * 512.0 / MB / seconds;
+			double writeRate = (sectorsWritten - prev->second.second) * 512.0 / MB / seconds;
+
+			std::string model = readLine("/sys/block/" + name + "/device/model");
+			std::string group = "Drive: " + name + (model.empty() ? "" : " [" + model + "]");
+			out.push_back({group, "read", "Read Rate", "MB/s", readRate, Category::Drive});
+			out.push_back({group, "write", "Write Rate", "MB/s", writeRate, Category::Drive});
+		}
+		prevDisk[name] = {sectorsRead, sectorsWritten};
+	}
+}
+
+//--------------------------
+// Network download/upload speed
+// from /sys/class/net/*/statistics
+//--------------------------
+void SensorReader::readNetwork(std::vector<Reading> &out, double seconds)
+{
+	const fs::path root = "/sys/class/net";
+	std::error_code ec;
+	std::vector<std::string> names;
+	for (auto &d : fs::directory_iterator(root, ec)) {
+		std::string name = d.path().filename();
+		// Skip loopback and virtual interfaces (docker, bridges, VPN tunnels).
+		if (name == "lo" || !fs::exists(d.path() / "device"))
+			continue;
+		names.push_back(name);
+	}
+	std::sort(names.begin(), names.end());
+
+	for (auto &name : names) {
+		unsigned long long rx, tx;
+		if (!readCounter(root / name / "statistics" / "rx_bytes", rx) ||
+		    !readCounter(root / name / "statistics" / "tx_bytes", tx))
+			continue;
+
+		auto prev = prevNet.find(name);
+		if (prev != prevNet.end() && seconds > 0) {
+			const double KB = 1024.0;
+			bool wifi = fs::exists(root / name / "wireless");
+			std::string group = std::string(wifi ? "Wi-Fi: " : "Network: ") + name;
+			out.push_back({group, "down", "Download Rate", "KB/s", (rx - prev->second.first) / KB / seconds, Category::Network});
+			out.push_back({group, "up", "Upload Rate", "KB/s", (tx - prev->second.second) / KB / seconds, Category::Network});
+			out.push_back({group, "total_down", "Total Downloaded", "MB", rx / (KB * KB), Category::Network});
+			out.push_back({group, "total_up", "Total Uploaded", "MB", tx / (KB * KB), Category::Network});
+		}
+		prevNet[name] = {rx, tx};
+	}
+}
+
+//--------------------------
+// NVIDIA GPUs (proprietary driver doesn't use hwmon)
+// via nvidia-smi
+//--------------------------
+void SensorReader::readNvidia(std::vector<Reading> &out)
+{
+	if (nvidiaState == 0)
+		nvidiaState = (access("/usr/bin/nvidia-smi", X_OK) == 0) ? 1 : -1;
+	if (nvidiaState != 1)
+		return;
+
+	FILE *p = popen("/usr/bin/nvidia-smi --query-gpu=index,name,temperature.gpu,utilization.gpu,"
+	                "clocks.gr,clocks.mem,power.draw,fan.speed,memory.used,memory.total "
+	                "--format=csv,noheader,nounits 2>/dev/null", "r");
+	if (!p)
+		return;
+
+	char buf[512];
+	while (fgets(buf, sizeof buf, p)) {
+		std::vector<std::string> f;
+		std::stringstream ss(buf);
+		std::string field;
+		while (std::getline(ss, field, ',')) {
+			size_t a = field.find_first_not_of(" \n");
+			size_t b = field.find_last_not_of(" \n");
+			f.push_back(a == std::string::npos ? "" : field.substr(a, b - a + 1));
+		}
+		if (f.size() < 10)
+			continue;
+
+		std::string group = "GPU [NVIDIA " + f[1] + "]";
+		auto add = [&](const std::string &key, const std::string &label, const std::string &unit,
+		               const std::string &text, double scale = 1.0) {
+			try {
+				out.push_back({group, key, label, unit, std::stod(text) * scale, Category::Gpu});
+			} catch (...) {
+				// "[N/A]" or similar: sensor not supported on this card
+			}
+		};
+		add("temp", "GPU Temperature", "°C", f[2]);
+		add("load", "GPU Core Load", "%", f[3]);
+		add("clock", "GPU Clock", "MHz", f[4]);
+		add("memclock", "GPU Memory Clock", "MHz", f[5]);
+		add("power", "GPU Power", "W", f[6]);
+		add("fan", "GPU Fan", "%", f[7]);
+		add("memused", "GPU Memory Used", "GB", f[8], 1.0 / 1024.0);
+	}
+	pclose(p);
 }

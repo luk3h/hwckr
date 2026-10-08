@@ -1,141 +1,211 @@
 #include "mainwindow.h"
 #include "sensorstab.h"
+#include "summarytab.h"
+#include "systeminfo.h"
+#include "theme.h"
 
+#include <QButtonGroup>
+#include <QComboBox>
+#include <QDateTime>
+#include <QDir>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QFrame>
+#include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
-#include <QTabWidget>
+#include <QMessageBox>
+#include <QPushButton>
+#include <QStackedWidget>
+#include <QStatusBar>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
-#include <QWidget>
-#include <QString>
-#include <Qt>
-
-#include <fstream>
-#include <sstream>
 
 MainWindow::MainWindow(QWidget *parent)
 	: QMainWindow(parent),
-	  tabs(new QTabWidget(this)),
-	  overviewTab(new QWidget()),
-	  cpuTab(new QWidget()),
-	  memoryTab(new QWidget()),
+	  pages(new QStackedWidget(this)),
+	  summaryTab(new SummaryTab()),
 	  sensorsTab(new SensorsTab()),
-	  overviewLabel(new QLabel(this)),
-	  cpuLabel(new QLabel(this)),
-	  memoryLabel(new QLabel(this)),
+	  pauseButton(nullptr),
+	  logButton(nullptr),
+	  intervalBox(nullptr),
+	  uptimeLabel(new QLabel(this)),
+	  sensorCountLabel(new QLabel(this)),
+	  logLabel(new QLabel(this)),
 	  updateTimer(new QTimer(this))
-
 {
 	setWindowTitle("hwckr");
 	setWindowIcon(QIcon(":/assets/hwckr.png"));
-	resize(900, 500);
+	resize(1200, 780);
+	setMinimumSize(900, 600);
 
-	setupTabs();
-	setCentralWidget(tabs);
+	//--------------------------
+	// Layout: header bar on top, pages below
+	//--------------------------
+	auto *central = new QWidget(this);
+	auto *layout = new QVBoxLayout(central);
+	layout->setContentsMargins(0, 0, 0, 0);
+	layout->setSpacing(0);
+	layout->addWidget(buildHeader());
 
-	updateSystemInfo();
+	pages->addWidget(summaryTab);
+	pages->addWidget(sensorsTab);
+	layout->addWidget(pages, 1);
+	setCentralWidget(central);
 
-	connect(updateTimer, &QTimer::timeout, this, [this]() {
-		updateSystemInfo();
-	});
+	//--------------------------
+	// Status bar
+	//--------------------------
+	auto *host = new QLabel(QString::fromStdString(SystemInfo::hostname() + "  ·  " +
+	                                                SystemInfo::osName() + "  ·  Linux " +
+	                                                SystemInfo::kernel()), this);
+	statusBar()->addWidget(host);
+	statusBar()->addPermanentWidget(logLabel);
+	statusBar()->addPermanentWidget(sensorCountLabel);
+	statusBar()->addPermanentWidget(uptimeLabel);
+	statusBar()->setSizeGripEnabled(false);
 
+	//--------------------------
+	// Refresh timer
+	//--------------------------
+	connect(updateTimer, &QTimer::timeout, this, &MainWindow::tick);
+	tick();                                          // first reading (rates need two)
+	QTimer::singleShot(250, this, &MainWindow::tick); // fill rates in quickly
 	updateTimer->start(1000);
 }
 
-void MainWindow::setupTabs()
+MainWindow::~MainWindow()
 {
-	//--------------------------
-	// Overview Tab
-	//--------------------------
-	auto *overviewLayout = new QVBoxLayout(overviewTab);
-
-	overviewLabel->setText("Loading overview...");
-	overviewLabel->setStyleSheet("font-family: monospace; font-size: 14px;");
-	overviewLabel->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-	overviewLabel->setWordWrap(true);
-
-	overviewLayout->addWidget(overviewLabel);
-
-	
-	//--------------------------
-	// CPU Tab
-	//--------------------------
-	auto *cpuLayout = new QVBoxLayout(cpuTab);
-
-	cpuLabel->setText("Loading CPU info...");
-	cpuLabel->setStyleSheet("font-family: monospace; font-size: 14px;");
-	cpuLabel->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-	cpuLabel->setWordWrap(true);
-
-	cpuLayout->addWidget(cpuLabel);
-
-
-	
-	//--------------------------
-	// Memory Tab
-	//--------------------------
-
-	auto *memoryLayout = new QVBoxLayout(memoryTab);
-
-	memoryLabel->setText("Loading Memory info...");
-	memoryLabel->setStyleSheet("font-family: monospace; font-size: 14px;");
-	memoryLabel->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-	memoryLabel->setWordWrap(true);
-
-	memoryLayout->addWidget(memoryLabel);
-
-
-	//--------------------------
-	// Add tabs to tab widget
-	//-------------------------
-	tabs->addTab(overviewTab, "Overview");
-	tabs->addTab(cpuTab, "CPU");
-	tabs->addTab(memoryTab, "Memory");
-	tabs->addTab(sensorsTab, "Sensors");
+	sensorsTab->stopLog();
 }
 
-void MainWindow::updateSystemInfo()
+QWidget *MainWindow::buildHeader()
 {
-	std::ifstream cpuinfo("/proc/cpuinfo");
-	std::stringstream buffer;
-	buffer << cpuinfo.rdbuf();
+	auto *bar = new QFrame(this);
+	bar->setObjectName("HeaderBar");
+	bar->setFixedHeight(58);
+	auto *h = new QHBoxLayout(bar);
+	h->setContentsMargins(16, 0, 16, 0);
+	h->setSpacing(10);
 
-	std::string cpuText = buffer.str();
-	
+	// Logo + name
+	auto *logo = new QLabel(bar);
+	QIcon appIcon(":/assets/hwckr.png");
+	logo->setPixmap(appIcon.pixmap(30, 30));
+	h->addWidget(logo);
 
-	//--------------------------
-	// Overview tab content
-	//--------------------------
-	QString overviewText = "hwckr Overview\n\n";
-	overviewText += "System status: Running\n";
-	overviewText += "Data source: /proc/cpuinfo\n";
-	overviewText += "CPU info loaded successfully.\n";
+	auto *nameBox = new QVBoxLayout();
+	nameBox->setSpacing(0);
+	auto *name = new QLabel("hw<span style='color:#36d1dc'>ckr</span>", bar);
+	name->setObjectName("AppTitle");
+	name->setTextFormat(Qt::RichText);
+	auto *tagline = new QLabel("hardware information & monitoring", bar);
+	tagline->setObjectName("AppSubtitle");
+	nameBox->addStretch();
+	nameBox->addWidget(name);
+	nameBox->addWidget(tagline);
+	nameBox->addStretch();
+	h->addLayout(nameBox);
+	h->addSpacing(28);
 
-	overviewLabel->setText(overviewText);
+	// Page navigation
+	auto *nav = new QButtonGroup(bar);
+	nav->setExclusive(true);
+	const QStringList names = {"Summary", "Sensors"};
+	for (int i = 0; i < names.size(); i++) {
+		auto *b = new QToolButton(bar);
+		b->setObjectName("NavButton");
+		b->setText(names[i]);
+		b->setCheckable(true);
+		b->setChecked(i == 0);
+		b->setCursor(Qt::PointingHandCursor);
+		b->setFixedHeight(58);
+		nav->addButton(b, i);
+		h->addWidget(b);
+	}
+	connect(nav, &QButtonGroup::idClicked, pages, &QStackedWidget::setCurrentIndex);
 
-	//--------------------------
-	// CPU tab content
-	//--------------------------
-	QString fullCpuText = QString::fromStdString(cpuText);
+	h->addStretch();
 
-	if (fullCpuText.size() > 3500) {
-		fullCpuText = fullCpuText.left(3500) + "\n\n...truncated by hwckr...";
+	// Controls
+	intervalBox = new QComboBox(bar);
+	intervalBox->addItem("Refresh 0.5 s", 500);
+	intervalBox->addItem("Refresh 1 s", 1000);
+	intervalBox->addItem("Refresh 2 s", 2000);
+	intervalBox->addItem("Refresh 5 s", 5000);
+	intervalBox->setCurrentIndex(1);
+	intervalBox->setCursor(Qt::PointingHandCursor);
+	connect(intervalBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+		updateTimer->setInterval(intervalBox->currentData().toInt());
+	});
+	h->addWidget(intervalBox);
+
+	pauseButton = new QPushButton("Pause", bar);
+	pauseButton->setCheckable(true);
+	pauseButton->setCursor(Qt::PointingHandCursor);
+	pauseButton->setToolTip("Freeze all readings");
+	connect(pauseButton, &QPushButton::toggled, this, &MainWindow::togglePause);
+	h->addWidget(pauseButton);
+
+	auto *reset = new QPushButton("Reset Min/Max", bar);
+	reset->setCursor(Qt::PointingHandCursor);
+	reset->setToolTip("Clear minimum, maximum, average and graphs");
+	connect(reset, &QPushButton::clicked, sensorsTab, &SensorsTab::resetStats);
+	h->addWidget(reset);
+
+	logButton = new QPushButton("● Log to CSV", bar);
+	logButton->setObjectName("Danger");
+	logButton->setCheckable(true);
+	logButton->setCursor(Qt::PointingHandCursor);
+	logButton->setToolTip("Record every sensor to a spreadsheet file");
+	connect(logButton, &QPushButton::toggled, this, &MainWindow::toggleLog);
+	h->addWidget(logButton);
+
+	return bar;
+}
+
+void MainWindow::tick()
+{
+	std::vector<Reading> readings = sensorsTab->refresh();
+	summaryTab->updateLive(readings);
+
+	uptimeLabel->setText("Uptime " + QString::fromStdString(SystemInfo::uptime()));
+	sensorCountLabel->setText(QString::number(sensorsTab->sensorCount()) + " sensors");
+}
+
+void MainWindow::togglePause(bool paused)
+{
+	if (paused) {
+		updateTimer->stop();
+		pauseButton->setText("Resume");
+	} else {
+		updateTimer->start(intervalBox->currentData().toInt());
+		pauseButton->setText("Pause");
+	}
+}
+
+void MainWindow::toggleLog(bool on)
+{
+	if (!on) {
+		sensorsTab->stopLog();
+		logButton->setText("● Log to CSV");
+		logLabel->clear();
+		return;
 	}
 
-	cpuLabel->setText(fullCpuText);
+	QString suggested = QDir::homePath() + "/hwckr-" +
+	                    QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss") + ".csv";
+	QString path = QFileDialog::getSaveFileName(this, "Log sensors to CSV", suggested, "CSV files (*.csv)");
 
-	
-	//--------------------------
-	// Memory tab content
-	//--------------------------
-	QString memoryText = "Memory tab goes here";
-
-	memoryLabel->setText(memoryText);
-
-	//--------------------------
-	// Sensors tab content
-	//--------------------------
-	sensorsTab->refresh();
+	if (path.isEmpty() || !sensorsTab->startLog(path)) {
+		if (!path.isEmpty())
+			QMessageBox::warning(this, "hwckr", "Couldn't open " + path + " for writing.");
+		logButton->blockSignals(true);
+		logButton->setChecked(false);
+		logButton->blockSignals(false);
+		return;
+	}
+	logButton->setText("■ Stop Logging");
+	logLabel->setText("<span style='color:#ff4d5e'>● REC</span>  " + QFileInfo(path).fileName());
 }
-
-

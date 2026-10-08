@@ -2,37 +2,38 @@
 
 #include <QMainWindow>
 
-class QTabWidget;
-class QWidget;
+class QComboBox;
 class QLabel;
+class QPushButton;
+class QStackedWidget;
 class QTimer;
 class SensorsTab;
+class SummaryTab;
 
 class MainWindow : public QMainWindow {
 	Q_OBJECT
 
 public:
 	MainWindow(QWidget *parent = nullptr);
+	~MainWindow() override;
 
 private:
-	QTabWidget *tabs;
-	QWidget *overviewTab;
-	QWidget *cpuTab;
-	QWidget *memoryTab;
+	QWidget *buildHeader();
+	void tick();
+	void togglePause(bool paused);
+	void toggleLog(bool on);
+
+	QStackedWidget *pages;
+	SummaryTab *summaryTab;
 	SensorsTab *sensorsTab;
 
-	QLabel *overviewLabel;
-	QLabel *cpuLabel;
-	QLabel *memoryLabel;
+	QPushButton *pauseButton;
+	QPushButton *logButton;
+	QComboBox *intervalBox;
+
+	QLabel *uptimeLabel;
+	QLabel *sensorCountLabel;
+	QLabel *logLabel;
+
 	QTimer *updateTimer;
-
-	void setupTabs();
-	void updateSystemInfo();
-
-	QString getCpuModel();
-	int getCoreCount();
-	QString getTotalRam();
-	QString getHostname();
-	QString getUptime();
-
 };
