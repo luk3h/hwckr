@@ -1,3 +1,3 @@
 #!/bin/bash
-
-/home/lukeh/Documents/hwckr/build/hwckr
+cd "$(dirname "$0")" || exit 1
+./build/hwckr

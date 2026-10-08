@@ -15,3 +15,9 @@ qt_add_executable(hwckr
 )
 
 target_link_libraries(hwckr PRIVATE Qt6::Widgets)
+
+qt_add_resources(hwckr "assets"
+	PREFIX "/"
+	BASE src
+	FILES src/assets/hwckr.png
+)

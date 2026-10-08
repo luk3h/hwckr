@@ -25,7 +25,7 @@ MainWindow::MainWindow(QWidget *parent)
 
 {
 	setWindowTitle("hwckr");
-	setWindowIcon(QIcon("/home/lukeh/Documents/hwckr/src/assets/hwckr.png"));
+	setWindowIcon(QIcon(":/assets/hwckr.png"));
 	resize(900, 500);
 
 	setupTabs();
