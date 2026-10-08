@@ -6,6 +6,7 @@ class QTabWidget;
 class QWidget;
 class QLabel;
 class QTimer;
+class SensorsTab;
 
 class MainWindow : public QMainWindow {
 	Q_OBJECT
@@ -18,6 +19,7 @@ private:
 	QWidget *overviewTab;
 	QWidget *cpuTab;
 	QWidget *memoryTab;
+	SensorsTab *sensorsTab;
 
 	QLabel *overviewLabel;
 	QLabel *cpuLabel;

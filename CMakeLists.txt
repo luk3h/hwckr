@@ -12,6 +12,10 @@ qt_add_executable(hwckr
 	src/main.cpp
 	src/mainwindow.cpp
 	src/mainwindow.h
+	src/sensorreader.cpp
+	src/sensorreader.h
+	src/sensorstab.cpp
+	src/sensorstab.h
 )
 
 target_link_libraries(hwckr PRIVATE Qt6::Widgets)

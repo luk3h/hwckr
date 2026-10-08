@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "sensorstab.h"
 
 #include <QIcon>
 #include <QLabel>
@@ -17,11 +18,12 @@ MainWindow::MainWindow(QWidget *parent)
 	  tabs(new QTabWidget(this)),
 	  overviewTab(new QWidget()),
 	  cpuTab(new QWidget()),
+	  memoryTab(new QWidget()),
+	  sensorsTab(new SensorsTab()),
 	  overviewLabel(new QLabel(this)),
 	  cpuLabel(new QLabel(this)),
-	  updateTimer(new QTimer(this)),
-	  memoryTab(new QWidget()),
-	  memoryLabel(new QLabel(this))
+	  memoryLabel(new QLabel(this)),
+	  updateTimer(new QTimer(this))
 
 {
 	setWindowTitle("hwckr");
@@ -89,6 +91,7 @@ void MainWindow::setupTabs()
 	tabs->addTab(overviewTab, "Overview");
 	tabs->addTab(cpuTab, "CPU");
 	tabs->addTab(memoryTab, "Memory");
+	tabs->addTab(sensorsTab, "Sensors");
 }
 
 void MainWindow::updateSystemInfo()
@@ -128,6 +131,11 @@ void MainWindow::updateSystemInfo()
 	QString memoryText = "Memory tab goes here";
 
 	memoryLabel->setText(memoryText);
+
+	//--------------------------
+	// Sensors tab content
+	//--------------------------
+	sensorsTab->refresh();
 }
 
 
