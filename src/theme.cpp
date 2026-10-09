@@ -63,6 +63,15 @@ void Theme::apply(QApplication &app)
 		QPushButton:checked, QToolButton#Action:checked { background: #133a40; border-color: #36d1dc; color: #36d1dc; }
 		QPushButton#Danger:checked { background: #3a1820; border-color: #ff4d5e; color: #ff4d5e; }
 
+		/* Segmented control (refresh rate) */
+		QFrame#Segment { background: #131a23; border: 1px solid #263241; border-radius: 7px; }
+		QToolButton#SegmentButton {
+			background: transparent; color: #8494a7; border: none; border-radius: 5px;
+			padding: 4px 10px; font-weight: 600;
+		}
+		QToolButton#SegmentButton:hover { color: #dce3ec; background: #1c2632; }
+		QToolButton#SegmentButton:checked { background: #133a40; color: #36d1dc; }
+
 		QComboBox {
 			background: #1c2632; color: #dce3ec;
 			border: 1px solid #263241; border-radius: 6px; padding: 4px 10px;

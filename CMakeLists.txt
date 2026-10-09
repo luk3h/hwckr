@@ -12,6 +12,8 @@ qt_add_executable(hwckr
 	src/main.cpp
 	src/mainwindow.cpp
 	src/mainwindow.h
+	src/pciids.cpp
+	src/pciids.h
 	src/sensorreader.cpp
 	src/sensorreader.h
 	src/sensorstab.cpp

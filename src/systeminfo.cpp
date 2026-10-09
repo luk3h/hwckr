@@ -1,4 +1,5 @@
 #include "systeminfo.h"
+#include "pciids.h"
 
 #include <algorithm>
 #include <arpa/inet.h>
@@ -65,55 +66,6 @@ void add(Device &d, const std::string &name, const std::string &value)
 void section(Device &d, const std::string &title)
 {
 	d.properties.push_back({title, ""});
-}
-
-// Look up a PCI vendor/device name in the pci.ids database, if it's installed.
-std::pair<std::string, std::string> pciName(std::string vendor, std::string device)
-{
-	auto strip = [](std::string s) {
-		if (s.rfind("0x", 0) == 0)
-			s = s.substr(2);
-		std::transform(s.begin(), s.end(), s.begin(), ::tolower);
-		return s;
-	};
-	vendor = strip(vendor);
-	device = strip(device);
-
-	for (const char *path : {"/usr/share/hwdata/pci.ids", "/usr/share/misc/pci.ids", "/usr/share/pci.ids"}) {
-		std::ifstream f(path);
-		if (!f)
-			continue;
-		std::string line, vendorName;
-		bool inVendor = false;
-		while (std::getline(f, line)) {
-			if (line.empty() || line[0] == '#')
-				continue;
-			if (line[0] != '\t') {
-				if (inVendor)
-					break; // passed our vendor without finding the device
-				if (line.rfind(vendor + "  ", 0) == 0) {
-					inVendor = true;
-					vendorName = line.substr(6);
-				}
-			} else if (inVendor && line.size() > 1 && line[1] != '\t' && line.rfind("\t" + device + "  ", 0) == 0) {
-				return {vendorName, line.substr(7)};
-			}
-		}
-		if (inVendor)
-			return {vendorName, ""};
-	}
-	return {"", ""};
-}
-
-std::string pciVendorFallback(const std::string &id)
-{
-	if (id == "0x10de") return "NVIDIA";
-	if (id == "0x1002") return "AMD";
-	if (id == "0x8086") return "Intel";
-	if (id == "0x1af4") return "Red Hat (virtio)";
-	if (id == "0x15ad") return "VMware";
-	if (id == "0x1234") return "QEMU";
-	return id;
 }
 
 //--------------------------
@@ -316,6 +268,11 @@ std::vector<Device> collectGpus()
 	}
 	std::sort(cards.begin(), cards.end());
 
+	// Dedicated cards first, built-in CPU graphics after.
+	std::stable_sort(cards.begin(), cards.end(), [](const fs::path &a, const fs::path &b) {
+		return !PciIds::isIntegratedGpu(a / "device") && PciIds::isIntegratedGpu(b / "device");
+	});
+
 	for (auto &card : cards) {
 		fs::path dev = card / "device";
 		std::string vendorId = readLine(dev / "vendor");
@@ -323,16 +280,19 @@ std::vector<Device> collectGpus()
 		if (vendorId.empty())
 			continue;
 
-		auto [vendorName, deviceName] = pciName(vendorId, deviceId);
+		auto [vendorName, deviceName] = PciIds::lookup(vendorId, deviceId);
 		if (vendorName.empty())
-			vendorName = pciVendorFallback(vendorId);
+			vendorName = PciIds::shortVendor(vendorId);
+		bool integrated = PciIds::isIntegratedGpu(dev);
 
 		Device d;
 		d.category = Category::Gpu;
-		d.title = deviceName.empty() ? vendorName + " GPU" : deviceName;
+		d.title = PciIds::gpuName(dev) + (integrated ? " (integrated)" : "");
 
-		section(d, "Graphics Card");
-		add(d, "Name", deviceName.empty() ? "Unknown (install pciutils for names)" : deviceName);
+		section(d, integrated ? "Integrated Graphics" : "Graphics Card");
+		add(d, "Name", PciIds::gpuName(dev));
+		add(d, "Chip", deviceName);
+		add(d, "Type", integrated ? "Built into the CPU" : "Dedicated graphics card");
 		add(d, "Vendor", vendorName);
 		add(d, "PCI ID", vendorId.substr(2) + ":" + deviceId.substr(2));
 		add(d, "PCI Slot", linkTarget(dev));

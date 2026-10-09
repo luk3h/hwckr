@@ -1,4 +1,5 @@
 #include "sensorreader.h"
+#include "pciids.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -65,10 +66,12 @@ std::pair<std::string, Category> describeChip(const std::string &chip, const fs:
 	if (chip == "coretemp") return {"CPU [Intel]", Category::Cpu};
 	if (chip == "k10temp" || chip == "zenpower") return {"CPU [AMD]", Category::Cpu};
 	if (chip == "cpu_thermal") return {"CPU", Category::Cpu};
-	if (chip == "amdgpu") return {"GPU [AMD]", Category::Gpu};
-	if (chip == "radeon") return {"GPU [AMD Radeon]", Category::Gpu};
-	if (chip == "nouveau") return {"GPU [NVIDIA nouveau]", Category::Gpu};
-	if (chip == "i915" || chip == "xe") return {"GPU [Intel]", Category::Gpu};
+	if (chip == "amdgpu" || chip == "radeon" || chip == "nouveau" || chip == "i915" || chip == "xe") {
+		// Name the actual card, and tell built-in CPU graphics apart from a graphics card.
+		fs::path pci = dev / "device";
+		std::string prefix = PciIds::isIntegratedGpu(pci) ? "Integrated GPU: " : "GPU: ";
+		return {prefix + PciIds::gpuName(pci), Category::Gpu};
+	}
 	if (chip == "nvme") {
 		std::string model = readLine(dev / "device" / "model");
 		return {model.empty() ? "NVMe Drive" : "NVMe: " + model, Category::Drive};
@@ -83,9 +86,11 @@ std::pair<std::string, Category> describeChip(const std::string &chip, const fs:
 	    chip.rfind("f71", 0) == 0 || chip.rfind("w83", 0) == 0 || chip == "asus_wmi_sensors" ||
 	    chip == "asus-ec-sensors" || chip == "gigabyte_wmi" || chip == "dell_smm")
 		return {"Motherboard [" + chip + "]", Category::Board};
-	if (chip == "iwlwifi" || chip.rfind("iwlwifi", 0) == 0 || chip.rfind("mt7", 0) == 0 ||
-	    chip == "r8169" || chip.rfind("r8169", 0) == 0 || chip == "ath11k" || chip == "ath10k_hwmon")
-		return {"Network [" + chip + "]", Category::Network};
+	if (chip.rfind("r8169", 0) == 0) return {"Ethernet [Realtek]", Category::Network};
+	if (chip.rfind("igc", 0) == 0 || chip.rfind("e1000", 0) == 0) return {"Ethernet [Intel]", Category::Network};
+	if (chip.rfind("iwlwifi", 0) == 0) return {"Wi-Fi [Intel]", Category::Network};
+	if (chip.rfind("mt7", 0) == 0) return {"Wi-Fi [MediaTek]", Category::Network};
+	if (chip.rfind("ath1", 0) == 0) return {"Wi-Fi [Qualcomm]", Category::Network};
 	if (chip == "BAT0" || chip == "BAT1" || chip == "ADP1" || chip == "AC")
 		return {"Battery [" + chip + "]", Category::Board};
 	return {chip, Category::Other};
@@ -132,8 +137,12 @@ std::vector<Reading> SensorReader::read()
 	readNetwork(out, seconds);
 
 	// CPU first, then GPU, memory, board, drives, network. Keeps the order within each.
+	// Within graphics, the dedicated card comes before built-in CPU graphics.
 	std::stable_sort(out.begin(), out.end(), [](const Reading &a, const Reading &b) {
-		return categoryRank(a.category) < categoryRank(b.category);
+		if (categoryRank(a.category) != categoryRank(b.category))
+			return categoryRank(a.category) < categoryRank(b.category);
+		bool ai = a.group.rfind("Integrated", 0) == 0, bi = b.group.rfind("Integrated", 0) == 0;
+		return !ai && bi;
 	});
 	return out;
 }

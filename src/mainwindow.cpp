@@ -5,7 +5,6 @@
 #include "theme.h"
 
 #include <QButtonGroup>
-#include <QComboBox>
 #include <QDateTime>
 #include <QDir>
 #include <QFileDialog>
@@ -29,7 +28,6 @@ MainWindow::MainWindow(QWidget *parent)
 	  sensorsTab(new SensorsTab()),
 	  pauseButton(nullptr),
 	  logButton(nullptr),
-	  intervalBox(nullptr),
 	  uptimeLabel(new QLabel(this)),
 	  sensorCountLabel(new QLabel(this)),
 	  logLabel(new QLabel(this)),
@@ -128,28 +126,50 @@ QWidget *MainWindow::buildHeader()
 
 	h->addStretch();
 
-	// Controls
-	intervalBox = new QComboBox(bar);
-	intervalBox->addItem("Refresh 0.5 s", 500);
-	intervalBox->addItem("Refresh 1 s", 1000);
-	intervalBox->addItem("Refresh 2 s", 2000);
-	intervalBox->addItem("Refresh 5 s", 5000);
-	intervalBox->setCurrentIndex(1);
-	intervalBox->setCursor(Qt::PointingHandCursor);
-	connect(intervalBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
-		updateTimer->setInterval(intervalBox->currentData().toInt());
+	// Refresh rate: segmented buttons  [0.5s|1s|2s|5s]
+	auto *refreshLabel = new QLabel("REFRESH", bar);
+	refreshLabel->setObjectName("CardTitle");
+	h->addWidget(refreshLabel);
+
+	auto *segment = new QFrame(bar);
+	segment->setObjectName("Segment");
+	auto *seg = new QHBoxLayout(segment);
+	segment->setFixedHeight(32);
+	seg->setContentsMargins(3, 3, 3, 3);
+	seg->setSpacing(2);
+	auto *rates = new QButtonGroup(segment);
+	rates->setExclusive(true);
+	const QList<QPair<QString, int>> options = {{"0.5s", 500}, {"1s", 1000}, {"2s", 2000}, {"5s", 5000}};
+	for (const auto &[text, ms] : options) {
+		auto *b = new QToolButton(segment);
+		b->setObjectName("SegmentButton");
+		b->setFixedHeight(24);
+		b->setText(text);
+		b->setCheckable(true);
+		b->setChecked(ms == 1000);
+		b->setCursor(Qt::PointingHandCursor);
+		rates->addButton(b, ms);
+		seg->addWidget(b);
+	}
+	connect(rates, &QButtonGroup::idClicked, this, [this](int ms) {
+		intervalMs = ms;
+		if (updateTimer->isActive())
+			updateTimer->start(ms);
 	});
-	h->addWidget(intervalBox);
+	h->addWidget(segment);
+	h->addSpacing(6);
 
 	pauseButton = new QPushButton("Pause", bar);
 	pauseButton->setCheckable(true);
 	pauseButton->setCursor(Qt::PointingHandCursor);
+	pauseButton->setFixedHeight(32);
 	pauseButton->setToolTip("Freeze all readings");
 	connect(pauseButton, &QPushButton::toggled, this, &MainWindow::togglePause);
 	h->addWidget(pauseButton);
 
 	auto *reset = new QPushButton("Reset Min/Max", bar);
 	reset->setCursor(Qt::PointingHandCursor);
+	reset->setFixedHeight(32);
 	reset->setToolTip("Clear minimum, maximum, average and graphs");
 	connect(reset, &QPushButton::clicked, sensorsTab, &SensorsTab::resetStats);
 	h->addWidget(reset);
@@ -158,6 +178,7 @@ QWidget *MainWindow::buildHeader()
 	logButton->setObjectName("Danger");
 	logButton->setCheckable(true);
 	logButton->setCursor(Qt::PointingHandCursor);
+	logButton->setFixedHeight(32);
 	logButton->setToolTip("Record every sensor to a spreadsheet file");
 	connect(logButton, &QPushButton::toggled, this, &MainWindow::toggleLog);
 	h->addWidget(logButton);
@@ -180,7 +201,7 @@ void MainWindow::togglePause(bool paused)
 		updateTimer->stop();
 		pauseButton->setText("Resume");
 	} else {
-		updateTimer->start(intervalBox->currentData().toInt());
+		updateTimer->start(intervalMs);
 		pauseButton->setText("Pause");
 	}
 }

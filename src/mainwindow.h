@@ -2,7 +2,6 @@
 
 #include <QMainWindow>
 
-class QComboBox;
 class QLabel;
 class QPushButton;
 class QStackedWidget;
@@ -29,7 +28,7 @@ private:
 
 	QPushButton *pauseButton;
 	QPushButton *logButton;
-	QComboBox *intervalBox;
+	int intervalMs = 1000;
 
 	QLabel *uptimeLabel;
 	QLabel *sensorCountLabel;
